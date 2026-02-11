@@ -77,12 +77,33 @@ SYSCTL
   sysctl --system >/dev/null
 }
 
+has_usable_ssh_key() {
+  local key_file
+  for key_file in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+    [[ -f "${key_file}" ]] || continue
+    if awk 'NF && $1 !~ /^#/' "${key_file}" | grep -Eq '^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521)|sk-ssh-(ed25519|rsa)) '; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 harden_ssh() {
+  local password_auth_line=""
+  local root_login_line=""
+
+  if has_usable_ssh_key; then
+    password_auth_line="PasswordAuthentication no"
+    root_login_line="PermitRootLogin no"
+  else
+    log "Uyarı: kullanıma hazır bir SSH anahtarı bulunamadı; parola/ROOT SSH kapatma atlandı"
+  fi
+
   backup_file /etc/ssh/sshd_config
   install -d -m 0755 /etc/ssh/sshd_config.d
-  cat >/etc/ssh/sshd_config.d/10-training-hardening.conf <<'SSHD'
-PasswordAuthentication no
-PermitRootLogin no
+  cat >/etc/ssh/sshd_config.d/10-training-hardening.conf <<SSHD
+${password_auth_line}
+${root_login_line}
 X11Forwarding no
 ClientAliveInterval 300
 ClientAliveCountMax 2
