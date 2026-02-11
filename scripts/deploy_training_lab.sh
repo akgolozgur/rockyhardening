@@ -63,22 +63,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-
 if ! [[ "${PROFILE}" =~ ^(standard|strict)$ ]]; then
   echo "--profile standard veya strict olmalı" >&2
   exit 1
 fi
-
-if [[ "${RUN_ALL}" != "true" ]]; then
-  if [[ -z "${STAGE}" ]]; then
-    usage
-    exit 1
-  fi
-
-  if ! [[ "${STAGE}" =~ ^([1-9]|10)$ ]]; then
-    echo "--stage 1-10 aralığında olmalı" >&2
-    exit 1
-  fi
 
 if [[ "${RUN_ALL}" != "true" && -z "${STAGE}" ]]; then
   usage
@@ -94,26 +82,19 @@ fi
 if [[ -n "${STAGE}" ]] && ! [[ "${STAGE}" =~ ^([1-9]|10)$ ]]; then
   echo "--stage 1-10 aralığında olmalı" >&2
   exit 1
-
 fi
 
 require_root
 baseline_hardening
 
 if [[ "${PROFILE}" == "strict" ]]; then
-
   log "Strict profil: faillock + mkhomedir + güçlü umask aktif"
   authselect select sssd with-faillock with-mkhomedir --force >/dev/null || true
   if grep -q '^UMASK' /etc/login.defs; then
     sed -ri 's/^UMASK.*/UMASK 027/' /etc/login.defs
   else
-    echo 'UMASK 027' >> /etc/login.defs
+    echo 'UMASK 027' >>/etc/login.defs
   fi
-
-  log "Strict profil: faillock ve stronger umask aktif"
-  authselect select sssd with-faillock --force >/dev/null || true
-  sed -ri 's/^UMASK.*/UMASK 027/' /etc/login.defs || true
-
 fi
 
 run_stage() {
@@ -136,16 +117,9 @@ if [[ "${RUN_ALL}" == "true" ]]; then
   for i in $(seq 1 10); do
     run_stage "${i}"
   done
-elif [[ -n "${STAGE}" ]]; then
-  run_stage "${STAGE}"
-
 else
-  usage
-  exit 1
-
-
+  run_stage "${STAGE}"
 fi
-
 
 if [[ "${SETUP_WEB443}" == "true" ]]; then
   log "443 web servisi kuruluyor"
