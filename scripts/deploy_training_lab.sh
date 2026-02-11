@@ -63,6 +63,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${RUN_ALL}" != "true" && -z "${STAGE}" ]]; then
+  usage
+  exit 1
+fi
+
+if [[ "${RUN_ALL}" == "true" && -n "${STAGE}" ]]; then
+  echo "--all ve --stage birlikte kullanılamaz" >&2
+  usage
+  exit 1
+fi
+
+if [[ -n "${STAGE}" ]] && ! [[ "${STAGE}" =~ ^([1-9]|10)$ ]]; then
+  echo "--stage 1-10 aralığında olmalı" >&2
+  exit 1
+fi
+
 require_root
 baseline_hardening
 
@@ -93,14 +109,7 @@ if [[ "${RUN_ALL}" == "true" ]]; then
     run_stage "${i}"
   done
 elif [[ -n "${STAGE}" ]]; then
-  if ! [[ "${STAGE}" =~ ^([1-9]|10)$ ]]; then
-    echo "--stage 1-10 aralığında olmalı" >&2
-    exit 1
-  fi
   run_stage "${STAGE}"
-else
-  usage
-  exit 1
 fi
 
 
