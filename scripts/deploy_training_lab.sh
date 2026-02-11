@@ -63,6 +63,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if ! [[ "${PROFILE}" =~ ^(standard|strict)$ ]]; then
+  echo "--profile standard veya strict olmalı" >&2
+  exit 1
+fi
+
+if [[ "${RUN_ALL}" != "true" ]]; then
+  if [[ -z "${STAGE}" ]]; then
+    usage
+    exit 1
+  fi
+
+  if ! [[ "${STAGE}" =~ ^([1-9]|10)$ ]]; then
+    echo "--stage 1-10 aralığında olmalı" >&2
+    exit 1
+  fi
+fi
+
 require_root
 baseline_hardening
 
@@ -97,10 +114,6 @@ if [[ "${RUN_ALL}" == "true" ]]; then
     run_stage "${i}"
   done
 elif [[ -n "${STAGE}" ]]; then
-  if ! [[ "${STAGE}" =~ ^([1-9]|10)$ ]]; then
-    echo "--stage 1-10 aralığında olmalı" >&2
-    exit 1
-  fi
   run_stage "${STAGE}"
 else
   usage
