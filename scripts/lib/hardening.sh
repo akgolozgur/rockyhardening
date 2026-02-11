@@ -3,6 +3,31 @@ set -euo pipefail
 
 
 LAB_ADMIN_USER="${LAB_ADMIN_USER:-albertepstein}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/rockyhardening}"
+ALLOW_SSH_SUBNET="${ALLOW_SSH_SUBNET:-}"
+
+log() {
+  printf '[%s] %s\n' "$(date +'%F %T')" "$*"
+}
+
+require_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Bu script root ile çalışmalıdır." >&2
+    exit 1
+  fi
+}
+
+backup_file() {
+  local f="$1"
+  if [[ -f "$f" ]]; then
+    install -d -m 0700 "${BACKUP_DIR}"
+    cp -a "$f" "${BACKUP_DIR}/$(basename "$f").bak.$(date +%F-%H%M%S)"
+  fi
+}
+
+
+LAB_ADMIN_USER="${LAB_ADMIN_USER:-albertepstein}"
+
 
 ensure_main_admin_user() {
   if ! id -u "${LAB_ADMIN_USER}" &>/dev/null; then
@@ -16,10 +41,25 @@ ensure_main_admin_user() {
 
   cat >/etc/sudoers.d/80-training-main-admin <<SUDO
 ${LAB_ADMIN_USER} ALL=(ALL) ALL
+
+Defaults use_pty
+Defaults log_output
+Defaults logfile="/var/log/sudo.log"
+
+
 SUDO
   chmod 0440 /etc/sudoers.d/80-training-main-admin
   visudo -cf /etc/sudoers >/dev/null
 }
+
+
+install_base_packages() {
+  dnf -y install policycoreutils-python-utils firewalld audit rsyslog aide openssh-server sudo curl authselect >/dev/null
+}
+
+apply_auth_and_crypto() {
+  authselect select sssd with-faillock with-mkhomedir --force >/dev/null || true
+  update-crypto-policies --set FUTURE >/dev/null || true
 
 log() {
   printf '[%s] %s\n' "$(date +'%F %T')" "$*"
@@ -43,6 +83,15 @@ net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.tcp_syncookies = 1
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+kernel.randomize_va_space = 2
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
 kernel.kptr_restrict = 2
@@ -53,11 +102,41 @@ SYSCTL
   sysctl --system >/dev/null
 }
 
+
+has_usable_ssh_key() {
+  local key_file
+  for key_file in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+    [[ -f "${key_file}" ]] || continue
+    if awk 'NF && $1 !~ /^#/' "${key_file}" | grep -Eq '^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521)|sk-ssh-(ed25519|rsa)) '; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+harden_ssh() {
+  local password_auth_line=""
+  local root_login_line=""
+
+  if has_usable_ssh_key; then
+    password_auth_line="PasswordAuthentication no"
+    root_login_line="PermitRootLogin no"
+  else
+    log "Uyarı: kullanıma hazır bir SSH anahtarı bulunamadı; parola/ROOT SSH kapatma atlandı"
+  fi
+
+  backup_file /etc/ssh/sshd_config
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat >/etc/ssh/sshd_config.d/10-training-hardening.conf <<SSHD
+${password_auth_line}
+${root_login_line}
+
 harden_ssh() {
   install -d -m 0755 /etc/ssh/sshd_config.d
   cat >/etc/ssh/sshd_config.d/10-training-hardening.conf <<'SSHD'
 PasswordAuthentication no
 PermitRootLogin no
+
 X11Forwarding no
 ClientAliveInterval 300
 ClientAliveCountMax 2
@@ -65,6 +144,39 @@ MaxAuthTries 3
 AllowAgentForwarding no
 AllowTcpForwarding no
 SSHD
+
+  sshd -t
+  systemctl enable --now sshd >/dev/null
+  systemctl reload sshd >/dev/null || true
+}
+
+detect_primary_interface() {
+  ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}'
+}
+
+configure_firewall() {
+  local iface
+  systemctl enable --now firewalld >/dev/null
+  firewall-cmd --permanent --set-default-zone=public >/dev/null
+  firewall-cmd --permanent --remove-service=cockpit >/dev/null || true
+  firewall-cmd --permanent --remove-service=dhcpv6-client >/dev/null || true
+
+  if [[ -n "${ALLOW_SSH_SUBNET}" ]]; then
+    local ssh_rule
+    ssh_rule="rule family=ipv4 source address=${ALLOW_SSH_SUBNET} service name=ssh accept"
+    firewall-cmd --permanent --query-rich-rule="${ssh_rule}" >/dev/null || \
+      firewall-cmd --permanent --add-rich-rule="${ssh_rule}" >/dev/null
+    firewall-cmd --permanent --remove-service=ssh >/dev/null || true
+  else
+    firewall-cmd --permanent --add-service=ssh >/dev/null
+  fi
+
+  iface="$(detect_primary_interface || true)"
+  if [[ -n "${iface}" ]]; then
+    firewall-cmd --permanent --zone=public --add-interface="${iface}" >/dev/null || true
+  fi
+
+
   systemctl enable --now sshd
   systemctl reload sshd || true
 }
@@ -73,6 +185,7 @@ configure_firewall() {
   systemctl enable --now firewalld
   firewall-cmd --permanent --set-default-zone=public >/dev/null
   firewall-cmd --permanent --add-service=ssh >/dev/null
+
   firewall-cmd --reload >/dev/null
 }
 
@@ -84,15 +197,36 @@ install udf /bin/true
 MODS
 }
 
+
+enforce_critical_permissions() {
+  chown root:root /etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/sudoers
+  chmod 0644 /etc/passwd /etc/group
+  chmod 000 /etc/shadow /etc/gshadow || chmod 0600 /etc/shadow /etc/gshadow
+  chmod 0440 /etc/sudoers
+}
+
+
+
 baseline_hardening() {
   log "Paketler yükleniyor"
   install_base_packages
+
+
+  log "Ana yönetici kullanıcı hazırlanıyor"
+  ensure_main_admin_user
+
+  log "auth + crypto politikaları uygulanıyor"
+  apply_auth_and_crypto
+
+  log "sysctl baseline uygulanıyor"
+  apply_sysctl_baseline
 
   log "sysctl baseline uygulanıyor"
   apply_sysctl_baseline
 
   log "Ana yönetici kullanıcı hazırlanıyor"
   ensure_main_admin_user
+
 
   log "SSH hardening uygulanıyor"
   harden_ssh
@@ -102,4 +236,8 @@ baseline_hardening() {
 
   log "kullanılmayan filesystem modülleri kapatılıyor"
   lock_unused_filesystems
+
+  enforce_critical_permissions
+
+
 }

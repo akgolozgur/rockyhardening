@@ -3,7 +3,9 @@ set -euo pipefail
 
 dnf -y install podman >/dev/null
 id -u appsvc &>/dev/null || useradd -m appsvc
+
 install -d -m 0755 /opt/training
+
 
 cat >/opt/training/stage08_container_run.sh <<'RUN'
 #!/usr/bin/env bash
