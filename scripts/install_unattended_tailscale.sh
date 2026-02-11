@@ -64,8 +64,11 @@ if [[ -z "${TS_AUTHKEY}" ]]; then
   exit 1
 fi
 
+
 log "dnf config-manager için gerekli plugin yükleniyor"
 dnf -y install dnf-plugins-core >/dev/null
+
+
 
 log "Tailscale repository ekleniyor"
 dnf config-manager --add-repo https://pkgs.tailscale.com/stable/rhel/9/tailscale.repo >/dev/null

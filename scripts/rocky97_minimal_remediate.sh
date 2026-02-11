@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/rockyhardening}"
 ALLOW_SSH_SUBNET="${ALLOW_SSH_SUBNET:-}"
 ALLOW_SSH_LOCKOUT_RISK="${ALLOW_SSH_LOCKOUT_RISK:-false}"
+
+# Rocky Linux 9.7 minimal için savunma amaçlı baseline remediation script'i.
+# Amaç: sistemin mevcut güvenlik seviyesini yükseltmek, bilinen zafiyetleri
+# paket güncellemesi + güvenli varsayılanlar ile azaltmak.
+
 
 log() {
   printf '[%s] %s\n' "$(date +'%F %T')" "$*"
@@ -19,6 +25,7 @@ require_root() {
 backup_file() {
   local f="$1"
   if [[ -f "$f" ]]; then
+
     install -d -m 0700 "${BACKUP_DIR}"
     cp -a "$f" "${BACKUP_DIR}/$(basename "$f").bak.$(date +%F-%H%M%S)"
   fi
@@ -44,10 +51,29 @@ apply_updates() {
   backup_file /etc/dnf/automatic.conf
   set_or_append_kv /etc/dnf/automatic.conf apply_updates yes
   set_or_append_kv /etc/dnf/automatic.conf upgrade_type security
+
+    cp -a "$f" "${f}.bak.$(date +%F-%H%M%S)"
+  fi
+}
+
+apply_updates() {
+  log "Dnf metadata yenileniyor"
+  dnf -y makecache >/dev/null
+
+  log "Güvenlik odaklı tüm güncellemeler uygulanıyor"
+  dnf -y upgrade --refresh >/dev/null
+
+  log "dnf-automatic yükleniyor ve günlük update timer etkinleştiriliyor"
+  dnf -y install dnf-automatic >/dev/null
+  backup_file /etc/dnf/automatic.conf
+  sed -ri 's/^apply_updates\s*=.*/apply_updates = yes/' /etc/dnf/automatic.conf
+  sed -ri 's/^upgrade_type\s*=.*/upgrade_type = security/' /etc/dnf/automatic.conf
+
   systemctl enable --now dnf-automatic.timer >/dev/null
 }
 
 install_defensive_tooling() {
+
   dnf -y install \
     openssh-server firewalld audit rsyslog aide chrony policycoreutils-python-utils \
     sudo passwd cracklib libpwquality authselect setroubleshoot-server openscap-scanner scap-security-guide >/dev/null
@@ -59,6 +85,16 @@ configure_auth_and_crypto() {
 }
 
 harden_password_policy() {
+
+  log "Temel güvenlik paketleri yükleniyor"
+  dnf -y install \
+    openssh-server firewalld audit rsyslog aide chrony policycoreutils-python-utils \
+    sudo passwd cracklib libpwquality >/dev/null
+}
+
+harden_password_policy() {
+  log "Parola politikası sertleştiriliyor"
+
   backup_file /etc/security/pwquality.conf
   cat >/etc/security/pwquality.conf <<'PWQ'
 minlen = 14
@@ -75,6 +111,7 @@ enforcing = 1
 PWQ
 
   backup_file /etc/login.defs
+
   if grep -q '^PASS_MAX_DAYS' /etc/login.defs; then
     sed -ri 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   90/' /etc/login.defs
   else
@@ -100,6 +137,16 @@ PWQ
 harden_sshd() {
   ensure_ssh_key_access
   backup_file /etc/ssh/sshd_config
+
+  sed -ri 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   90/' /etc/login.defs
+  sed -ri 's/^PASS_MIN_DAYS.*/PASS_MIN_DAYS   1/' /etc/login.defs
+  sed -ri 's/^PASS_WARN_AGE.*/PASS_WARN_AGE   14/' /etc/login.defs
+  sed -ri 's/^UMASK.*/UMASK           027/' /etc/login.defs
+}
+
+harden_sshd() {
+  log "SSHD hardening uygulanıyor"
+
   install -d -m 0755 /etc/ssh/sshd_config.d
   cat >/etc/ssh/sshd_config.d/99-rocky97-hardening.conf <<'SSHD'
 PermitRootLogin no
@@ -121,6 +168,7 @@ SSHD
   systemctl enable --now sshd >/dev/null
   systemctl reload sshd >/dev/null || true
 }
+
 
 has_usable_authorized_keys() {
   local auth_file line tmp_key
@@ -180,16 +228,30 @@ configure_firewalld() {
     firewall-cmd --permanent --zone=public --add-interface="${iface}" >/dev/null || true
   fi
 
+
+configure_firewalld() {
+  log "firewalld varsayılanları sıkılaştırılıyor"
+  systemctl enable --now firewalld >/dev/null
+  firewall-cmd --permanent --set-default-zone=drop >/dev/null
+  firewall-cmd --permanent --zone=drop --add-service=ssh >/dev/null
+
   firewall-cmd --reload >/dev/null
 }
 
 enforce_selinux() {
+
+  log "SELinux enforcing yapılıyor"
+
   backup_file /etc/selinux/config
   sed -ri 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
   setenforce 1 || true
 }
 
 kernel_and_network_hardening() {
+
+
+  log "Kernel/sysctl hardening uygulanıyor"
+
   cat >/etc/sysctl.d/99-rocky97-hardening.conf <<'SYSCTL'
 kernel.randomize_va_space = 2
 kernel.kptr_restrict = 2
@@ -204,6 +266,7 @@ net.ipv4.conf.all.accept_source_route = 0
 net.ipv4.conf.default.accept_source_route = 0
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
+
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 net.ipv4.icmp_ignore_bogus_error_responses = 1
 net.ipv4.tcp_syncookies = 1
@@ -212,11 +275,20 @@ net.ipv6.conf.all.accept_redirects = 0
 net.ipv6.conf.default.accept_redirects = 0
 net.ipv6.conf.all.accept_ra = 0
 net.ipv6.conf.default.accept_ra = 0
+
+net.ipv4.tcp_syncookies = 1
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
 SYSCTL
   sysctl --system >/dev/null
 }
 
 disable_unused_fs_modules() {
+
+
+  log "Nadiren kullanılan FS modülleri kapatılıyor"
+
   cat >/etc/modprobe.d/99-rocky97-hardening.conf <<'MODS'
 install cramfs /bin/true
 install freevxfs /bin/true
@@ -229,15 +301,21 @@ MODS
 }
 
 audit_baseline() {
+
   cat >/etc/audit/rules.d/99-rocky97-hardening.rules <<'AUDIT'
 -a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change
 -a always,exit -F arch=b32 -S adjtimex,settimeofday,clock_settime -k time-change
+
+  log "auditd baseline kuralı yazılıyor"
+  cat >/etc/audit/rules.d/99-rocky97-hardening.rules <<'AUDIT'
+
 -w /etc/passwd -p wa -k identity
 -w /etc/group -p wa -k identity
 -w /etc/shadow -p wa -k identity
 -w /etc/gshadow -p wa -k identity
 -w /etc/sudoers -p wa -k priv_esc
 -w /etc/sudoers.d/ -p wa -k priv_esc
+
 -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat,chown,fchown,fchownat,lchown -F auid>=1000 -F auid!=unset -k perm_mod
 -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
 AUDIT
@@ -256,11 +334,24 @@ aide_init_if_needed() {
   systemctl enable --now rsyslog >/dev/null
   if [[ ! -f /var/lib/aide/aide.db.gz ]]; then
     nice -n 10 aide --init >/dev/null || true
+
+AUDIT
+  systemctl enable --now auditd >/dev/null
+  augenrules --load >/dev/null || true
+}
+
+aide_init_if_needed() {
+  log "AIDE etkinleştiriliyor"
+  systemctl enable --now rsyslog >/dev/null
+  if [[ ! -f /var/lib/aide/aide.db.gz ]]; then
+    aide --init >/dev/null || true
+
     if [[ -f /var/lib/aide/aide.db.new.gz ]]; then
       mv -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
     fi
   fi
 }
+
 
 set_critical_permissions() {
   chmod 0644 /etc/passwd /etc/group
@@ -302,12 +393,20 @@ remove_risky_services() {
   for unit in avahi-daemon.service cups.service rpcbind.service nfs-server.service telnet.socket tftp.socket; do
     if systemctl list-unit-files --no-legend | awk '{print $1}' | grep -qx "${unit}"; then
       systemctl disable --now "${unit}" >/dev/null || true
+
+remove_risky_services() {
+  log "Minimal sistemde gereksiz olabilecek ağ servisleri kapatılıyor"
+  for svc in avahi-daemon cups rpcbind nfs-server; do
+    if systemctl list-unit-files | awk '{print $1}' | grep -qx "${svc}.service"; then
+      systemctl disable --now "${svc}.service" >/dev/null || true
+
     fi
   done
 }
 
 main() {
   require_root
+
   log "Paketler yükleniyor"
   install_defensive_tooling
   log "Güncellemeler uygulanıyor"
@@ -337,6 +436,18 @@ main() {
   log "OpenSCAP değerlendirmesi çalıştırılıyor"
   run_openscap_eval
   log "Gereksiz servisler kapatılıyor"
+
+  install_defensive_tooling
+  apply_updates
+  harden_password_policy
+  harden_sshd
+  configure_firewalld
+  enforce_selinux
+  kernel_and_network_hardening
+  disable_unused_fs_modules
+  audit_baseline
+  aide_init_if_needed
+
   remove_risky_services
 
   log "Remediation tamamlandı. Kernel/SELinux değişiklikleri için reboot önerilir."
