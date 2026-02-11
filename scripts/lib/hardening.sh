@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
 LAB_ADMIN_USER="${LAB_ADMIN_USER:-albertepstein}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/rockyhardening}"
 ALLOW_SSH_SUBNET="${ALLOW_SSH_SUBNET:-}"
@@ -25,10 +24,6 @@ backup_file() {
   fi
 }
 
-
-LAB_ADMIN_USER="${LAB_ADMIN_USER:-albertepstein}"
-
-
 ensure_main_admin_user() {
   if ! id -u "${LAB_ADMIN_USER}" &>/dev/null; then
     useradd -m -G wheel "${LAB_ADMIN_USER}"
@@ -45,13 +40,10 @@ ${LAB_ADMIN_USER} ALL=(ALL) ALL
 Defaults use_pty
 Defaults log_output
 Defaults logfile="/var/log/sudo.log"
-
-
 SUDO
   chmod 0440 /etc/sudoers.d/80-training-main-admin
   visudo -cf /etc/sudoers >/dev/null
 }
-
 
 install_base_packages() {
   dnf -y install policycoreutils-python-utils firewalld audit rsyslog aide openssh-server sudo curl authselect >/dev/null
@@ -60,20 +52,6 @@ install_base_packages() {
 apply_auth_and_crypto() {
   authselect select sssd with-faillock with-mkhomedir --force >/dev/null || true
   update-crypto-policies --set FUTURE >/dev/null || true
-
-log() {
-  printf '[%s] %s\n' "$(date +'%F %T')" "$*"
-}
-
-require_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    echo "Bu script root ile çalışmalıdır." >&2
-    exit 1
-  fi
-}
-
-install_base_packages() {
-  dnf -y install policycoreutils-python-utils firewalld audit rsyslog aide openssh-server sudo curl >/dev/null
 }
 
 apply_sysctl_baseline() {
@@ -92,8 +70,6 @@ net.ipv4.tcp_syncookies = 1
 net.ipv6.conf.all.accept_redirects = 0
 net.ipv6.conf.default.accept_redirects = 0
 kernel.randomize_va_space = 2
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
 kernel.kptr_restrict = 2
 kernel.dmesg_restrict = 1
 fs.protected_hardlinks = 1
@@ -101,7 +77,6 @@ fs.protected_symlinks = 1
 SYSCTL
   sysctl --system >/dev/null
 }
-
 
 has_usable_ssh_key() {
   local key_file
@@ -130,13 +105,6 @@ harden_ssh() {
   cat >/etc/ssh/sshd_config.d/10-training-hardening.conf <<SSHD
 ${password_auth_line}
 ${root_login_line}
-
-harden_ssh() {
-  install -d -m 0755 /etc/ssh/sshd_config.d
-  cat >/etc/ssh/sshd_config.d/10-training-hardening.conf <<'SSHD'
-PasswordAuthentication no
-PermitRootLogin no
-
 X11Forwarding no
 ClientAliveInterval 300
 ClientAliveCountMax 2
@@ -156,6 +124,7 @@ detect_primary_interface() {
 
 configure_firewall() {
   local iface
+
   systemctl enable --now firewalld >/dev/null
   firewall-cmd --permanent --set-default-zone=public >/dev/null
   firewall-cmd --permanent --remove-service=cockpit >/dev/null || true
@@ -176,16 +145,6 @@ configure_firewall() {
     firewall-cmd --permanent --zone=public --add-interface="${iface}" >/dev/null || true
   fi
 
-
-  systemctl enable --now sshd
-  systemctl reload sshd || true
-}
-
-configure_firewall() {
-  systemctl enable --now firewalld
-  firewall-cmd --permanent --set-default-zone=public >/dev/null
-  firewall-cmd --permanent --add-service=ssh >/dev/null
-
   firewall-cmd --reload >/dev/null
 }
 
@@ -197,7 +156,6 @@ install udf /bin/true
 MODS
 }
 
-
 enforce_critical_permissions() {
   chown root:root /etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/sudoers
   chmod 0644 /etc/passwd /etc/group
@@ -205,12 +163,9 @@ enforce_critical_permissions() {
   chmod 0440 /etc/sudoers
 }
 
-
-
 baseline_hardening() {
   log "Paketler yükleniyor"
   install_base_packages
-
 
   log "Ana yönetici kullanıcı hazırlanıyor"
   ensure_main_admin_user
@@ -220,13 +175,6 @@ baseline_hardening() {
 
   log "sysctl baseline uygulanıyor"
   apply_sysctl_baseline
-
-  log "sysctl baseline uygulanıyor"
-  apply_sysctl_baseline
-
-  log "Ana yönetici kullanıcı hazırlanıyor"
-  ensure_main_admin_user
-
 
   log "SSH hardening uygulanıyor"
   harden_ssh
@@ -238,6 +186,4 @@ baseline_hardening() {
   lock_unused_filesystems
 
   enforce_critical_permissions
-
-
 }
