@@ -107,8 +107,11 @@ configure_firewall() {
   firewall-cmd --permanent --remove-service=dhcpv6-client >/dev/null || true
 
   if [[ -n "${ALLOW_SSH_SUBNET}" ]]; then
+    local ssh_rule
+    ssh_rule="rule family=ipv4 source address=${ALLOW_SSH_SUBNET} service name=ssh accept"
+    firewall-cmd --permanent --query-rich-rule="${ssh_rule}" >/dev/null || \
+      firewall-cmd --permanent --add-rich-rule="${ssh_rule}" >/dev/null
     firewall-cmd --permanent --remove-service=ssh >/dev/null || true
-    firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=${ALLOW_SSH_SUBNET} service name=ssh accept" >/dev/null || true
   else
     firewall-cmd --permanent --add-service=ssh >/dev/null
   fi

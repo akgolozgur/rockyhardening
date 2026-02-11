@@ -3,6 +3,7 @@ set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/rockyhardening}"
 ALLOW_SSH_SUBNET="${ALLOW_SSH_SUBNET:-}"
+ALLOW_SSH_LOCKOUT_RISK="${ALLOW_SSH_LOCKOUT_RISK:-false}"
 
 log() {
   printf '[%s] %s\n' "$(date +'%F %T')" "$*"
@@ -97,6 +98,7 @@ PWQ
 }
 
 harden_sshd() {
+  ensure_ssh_key_access
   backup_file /etc/ssh/sshd_config
   install -d -m 0755 /etc/ssh/sshd_config.d
   cat >/etc/ssh/sshd_config.d/99-rocky97-hardening.conf <<'SSHD'
@@ -118,6 +120,32 @@ SSHD
   sshd -t
   systemctl enable --now sshd >/dev/null
   systemctl reload sshd >/dev/null || true
+}
+
+has_usable_authorized_keys() {
+  local auth_file
+  while IFS= read -r -d '' auth_file; do
+    if [[ -s "${auth_file}" ]] && grep -qEv '^\s*(#|$)' "${auth_file}"; then
+      return 0
+    fi
+  done < <(find /root /home -mindepth 2 -maxdepth 3 -type f -path '*/.ssh/authorized_keys' -print0 2>/dev/null)
+
+  return 1
+}
+
+ensure_ssh_key_access() {
+  if has_usable_authorized_keys; then
+    return 0
+  fi
+
+  if [[ "${ALLOW_SSH_LOCKOUT_RISK}" == "true" ]]; then
+    log "UYARI: authorized_keys bulunamadı, ALLOW_SSH_LOCKOUT_RISK=true ile devam ediliyor"
+    return 0
+  fi
+
+  echo "HATA: PasswordAuthentication=no uygulanmadan önce en az bir geçerli authorized_keys girdisi bulunmalı." >&2
+  echo "İstisnai olarak devam etmek için ALLOW_SSH_LOCKOUT_RISK=true ayarlayın." >&2
+  exit 1
 }
 
 configure_firewalld() {
