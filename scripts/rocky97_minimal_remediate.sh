@@ -123,11 +123,21 @@ SSHD
 }
 
 has_usable_authorized_keys() {
-  local auth_file
+  local auth_file line tmp_key
   while IFS= read -r -d '' auth_file; do
-    if [[ -s "${auth_file}" ]] && grep -qEv '^\s*(#|$)' "${auth_file}"; then
-      return 0
-    fi
+    [[ -s "${auth_file}" ]] || continue
+
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ "${line}" =~ ^[[:space:]]*(#|$) ]] && continue
+
+      tmp_key="$(mktemp)"
+      printf '%s\n' "${line}" >"${tmp_key}"
+      if ssh-keygen -l -f "${tmp_key}" >/dev/null 2>&1; then
+        rm -f "${tmp_key}"
+        return 0
+      fi
+      rm -f "${tmp_key}"
+    done <"${auth_file}"
   done < <(find /root /home -mindepth 2 -maxdepth 3 -type f -path '*/.ssh/authorized_keys' -print0 2>/dev/null)
 
   return 1
@@ -149,15 +159,18 @@ ensure_ssh_key_access() {
 }
 
 configure_firewalld() {
-  local iface
+  local iface ssh_restrict_rule
   systemctl enable --now firewalld >/dev/null
   firewall-cmd --permanent --set-default-zone=public >/dev/null
   firewall-cmd --permanent --remove-service=cockpit >/dev/null || true
   firewall-cmd --permanent --remove-service=dhcpv6-client >/dev/null || true
 
   if [[ -n "${ALLOW_SSH_SUBNET}" ]]; then
+    ssh_restrict_rule="rule family=ipv4 source address=${ALLOW_SSH_SUBNET} service name=ssh accept"
+    if ! firewall-cmd --permanent --query-rich-rule="${ssh_restrict_rule}" >/dev/null; then
+      firewall-cmd --permanent --add-rich-rule="${ssh_restrict_rule}" >/dev/null
+    fi
     firewall-cmd --permanent --remove-service=ssh >/dev/null || true
-    firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=${ALLOW_SSH_SUBNET} service name=ssh accept" >/dev/null || true
   else
     firewall-cmd --permanent --add-service=ssh >/dev/null
   fi
